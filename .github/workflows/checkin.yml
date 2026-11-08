@@ -1,25 +1,24 @@
 name: AnyRouter 自动签到
 on:
-  schedule:
-    - cron: '0 */6 * * *'
   workflow_dispatch:
-    inputs:
-      debug:
-        description: 开启调试模式（截图 artifact、详细日志）
-        required: false
-        default: false
-        type: boolean
+
+permissions:
+  contents: read
 
 jobs:
   checkin:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     environment: production
     env:
       PYTHONIOENCODING: utf-8
       PYTHONUNBUFFERED: 1
-      DEBUG_MODE: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.debug == 'true' && 'true' || 'false' }}
+      DEBUG_MODE: 'false'
     steps:
     - uses: actions/checkout@v6
+      with:
+        ref: 3b16662142c68703ea3e79c77c06a8cf6bba7990
+        persist-credentials: false
 
     - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b
       with:
@@ -72,22 +71,6 @@ jobs:
           balance-hash-${{ github.ref_name }}-
           balance-hash-
 
-    - name: 恢复浏览器 Profile 缓存
-      uses: actions/cache@v5
-      with:
-        path: .browser_profiles
-        key: browser-profiles-${{ runner.os }}-v1
-        restore-keys: |
-          browser-profiles-${{ runner.os }}-
-
-    - name: 配置代理
-      env:
-        PROXY_SUBSCRIPTION_URL: ${{ secrets.PROXY_SUBSCRIPTION_URL }}
-        PROXY_TEST_URL: https://www.google.com/generate_204
-        MIHOMO_VERSION: v1.19.27
-        PROXY_REQUIRED: false
-      run: bash scripts/setup_mihomo_proxy.sh
-
     - name: 执行签到
       env:
         DEBUG_MODE: ${{ env.DEBUG_MODE }}
@@ -96,49 +79,31 @@ jobs:
         CHECKIN_WAIT_TIMEOUT_MS: 120000
         ANYROUTER_ACCOUNTS: ${{ secrets.ANYROUTER_ACCOUNTS }}
         PROVIDERS: ${{ secrets.PROVIDERS }}
-        DINGDING_WEBHOOK: ${{ secrets.DINGDING_WEBHOOK }}
-        EMAIL_USER: ${{ secrets.EMAIL_USER }}
-        EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
-        EMAIL_TO: ${{ secrets.EMAIL_TO }}
-        EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
-        CUSTOM_SMTP_SERVER: ${{ secrets.CUSTOM_SMTP_SERVER }}
-        PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
-        SERVERPUSHKEY: ${{ secrets.SERVERPUSHKEY }}
-        FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
-        WEIXIN_WEBHOOK: ${{ secrets.WEIXIN_WEBHOOK }}
-        TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        GOTIFY_URL: ${{ secrets.GOTIFY_URL }}
-        GOTIFY_TOKEN: ${{ secrets.GOTIFY_TOKEN }}
-        GOTIFY_PRIORITY: ${{ secrets.GOTIFY_PRIORITY }}
-        BARK_KEY: ${{ secrets.BARK_KEY }}
-        BARK_SERVER: ${{ secrets.BARK_SERVER }}
       run: |
+        python - <<'PY'
+        import json
+        import os
+        def mask(value):
+            if value is not None and str(value):
+                escaped = str(value).replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+                print('::add-mask::' + escaped)
+        for account in json.loads(os.environ['ANYROUTER_ACCOUNTS']):
+            for key in ('password', 'email', 'api_user'):
+                mask(account.get(key))
+            cookies = account.get('cookies')
+            if isinstance(cookies, dict):
+                for value in cookies.values():
+                    mask(value)
+            elif isinstance(cookies, str):
+                mask(cookies)
+                for item in cookies.split(';'):
+                    if '=' in item:
+                        mask(item.strip().split('=', 1)[1])
+        PY
         xvfb-run -a --server-args="-screen 0 1920x1080x24" uv run checkin.py
-
-    - name: 上传调试截图
-      if: always() && env.DEBUG_MODE == 'true'
-      env:
-        HTTP_PROXY: ''
-        HTTPS_PROXY: ''
-      uses: actions/upload-artifact@v4
-      with:
-        name: checkin-screenshots-${{ github.run_id }}
-        path: checkin_screenshots/
-        if-no-files-found: warn
-        include-hidden-files: true
-        retention-days: 14
-
-    - name: 停止代理
-      if: always()
-      run: bash scripts/stop_mihomo_proxy.sh
 
     - name: 执行结果
       if: always()
       run: |
         echo "签到任务执行完成"
         echo "时间: $(date)"
-        if [ "${DEBUG_MODE}" = "true" ] && [ -d checkin_screenshots ] && [ "$(ls -A checkin_screenshots 2>/dev/null)" ]; then
-          echo "调试截图已上传为 artifact: checkin-screenshots-${{ github.run_id }}"
-          ls -la checkin_screenshots/
-        fi
